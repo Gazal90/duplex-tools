@@ -6,6 +6,7 @@ import gzip
 from pathlib import Path
 import pickle
 import sys
+import math
 
 import edlib
 from more_itertools import pairwise
@@ -16,12 +17,15 @@ from tqdm import tqdm
 
 import duplex_tools
 
-EDIT_THRESHOLDS = {'PCR': 45, 'Native': 9}
-mask_size_default_head = 5
-mask_size_default_tail = 14
-mask_size_default_N = 11
-HEAD_ADAPTER = 'AATGTACTTCGTTCAGTTACGTATTGCT'
-TAIL_ADAPTER = 'GCAATACGTAACTGAACGAAGT'
+EDIT_THRESHOLDS = {'PCR': 50, 'Native': 9} #defaults:'PCR':45,'Native':9#####        #PCR5;Native5 #PCR 14 for linkers
+mask_size_default_head = 5 #0 #3 #5
+mask_size_default_tail = 14 #0 #3 #14
+mask_size_default_N = 11 #0 #6 #11
+	#HEAD_ADAPTER = 'AATGTACTTCGTTCAGTTACGTATTGCT'
+	#TAIL_ADAPTER = 'GCAATACGTAACTGAACGAAGT'
+#--decided based on the adapter--#
+HEAD_ADAPTER = ''
+TAIL_ADAPTER = ''
 rctrans = str.maketrans('ACGT', 'TGCA')
 
 
@@ -31,12 +35,66 @@ def rev_comp(seq):
 
 
 def build_targets(
-        n_bases_to_mask_head, n_bases_to_mask_tail, degenerate_bases=None,
+        n_bases_to_mask_head, n_bases_to_mask_tail,adapter_type, degenerate_bases=None,
         pcr_primers=(
-            'ACTTGCCTGTCGCTCTATCTTCGGCGTCTGCTTGGGTGTTTAACC',
+            'ACTTGCCTGTCGCTCTATCTTCGGCGTCTGCTTGGGTGTTTAACC',  #default
             'TTTCTGTTGGTGCTGATATTGCGGCGTCTGCTTGGGTGTTTAACCT'),
+#             'TCGTCGGCAGCGTC',	#CapTrap primers
+#             'GTCTCGTGGGCTCGG'),
+###             'AGATGTGTATAAGAGACAGNNNNNNNNGTGGTATCAACGCAGAGTAC',	#CapTrap linkers
+###             'AGATGTGTATAAGAGACAGCGATGCTTTTTTTTTTTTTTTT'),
+##             'AATGTACTTCGTTCAGTTACGTATTGCT',
+##             'GCAATACGTAACTGAACGAAGT'),
         head_adapter=HEAD_ADAPTER, tail_adapter=TAIL_ADAPTER,
         n_replacement=None):
+    print(adapter_type)
+
+###-------deciding the head and tail adapters based on the adapter to be used for splitting------##
+    if adapter_type=="ONT_sequencing_adapter":
+       head_adapter=(
+            'AATGTACTTCGTTCAGTTACGTATTGCT')
+       tail_adapter=(
+            'GCAATACGTAACTGAACGAAGT') 
+       pcr_primers=(
+            '',
+            '')
+    elif adapter_type=="ONT_sequencing_adapter+CapTrapSeqJoint":
+        head_adapter=(
+            'AATGTACTTCGTTCAGTTACGTATTGCT')
+        tail_adapter=(
+            'GCAATACGTAACTGAACGAAGT')
+        pcr_primers=(
+            'TCGTCGGCAGCGTCAGATGTGTATAAGAGACAGNNNNNNNNGTGGTATCAACGCAGAGTAC',
+            'GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAGCGATGCTTTTTTTTTTTTTTTT')
+    elif adapter_type=="CapTrap_primer":
+       head_adapter=(
+            '')
+       tail_adapter=(
+            '')
+       pcr_primers=(
+            'TCGTCGGCAGCGTC',
+            'GTCTCGTGGGCTCGG')	#5'rc(tail)3'
+            #'CCGAGCCCACGAGAC') #5'tail3'
+            #'CAGAGCACCCGAGCC') #3'tail5'
+            #'GGCTCGGGTGCTCTG') #3'rc(tail)5'
+    elif adapter_type=="CapTrap_joint":
+       head_adapter=(
+            '')
+       tail_adapter=(
+            '')
+       pcr_primers=(
+            'TCGTCGGCAGCGTCAGATGTGTATAAGAGACAGNNNNNNNNGTGGTATCAACGCAGAGTAC',#TCGTCGGCAGCGTC AGATGTGTATAAGAGACAGNNNNNNNNGTGGTATCAACGCAGAGTAC
+            'GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAGCGATGCTTTTTTTTTTTTTTTT')#GTCTCGTGGGCTCGG AGATGTGTATAAGAGACAGCGATGCTTTTTTTTTTTTTTTT
+    else:
+       head_adapter=(
+            '')
+       tail_adapter=(
+            '')
+       pcr_primers=(
+            'AGATGTGTATAAGAGACAGNNNNNNNNGTGGTATCAACGCAGAGTAC',
+            'AGATGTGTATAAGAGACAGCGATGCTTTTTTTTTTTTTTTT')
+####-------------------------------------------------------------------######
+
     """Build some targets."""
     if degenerate_bases is None:
         degenerate_bases = n_bases_to_mask_head + n_bases_to_mask_tail
@@ -57,8 +115,10 @@ def build_targets(
                 + middle_sequence + head_adapter[n_bases_to_mask_head:] + y)
             for x in pcr_primers for y in pcr_primers]
     }
+    print(targets)
     return targets
 
+#logger.info(f'Adapter: {adapter_type}\n')
 
 def find_mid_adaptor(
         seq, targets, print_alignment=False, print_threshold=10,
@@ -117,7 +177,8 @@ def process_file(
         print_threshold_delta=0,
         allow_multiple_splits=False,
         trim_start=200,
-        trim_end=200
+        trim_end=200,
+        adapter_type="ONT_sequencing_adapter",
         ):
     """Run the workflow on a single file."""
     newfastx = fastx.with_name(
@@ -146,9 +207,12 @@ def process_file(
                 print_id=read_id,
                 trim_start=trim_start,
                 trim_end=trim_end)
-
+            #print("ITIS: ",result)
+            #print(read_id,len(result['locations']))
             if result['editDistance'] < edit_threshold:
                 result = deduplicate_locations_first_key(result)
+                print("dedup",result)
+                print("DEDUP",read_id,"splitNs=",len(result['locations']))
                 if not allow_multiple_splits and len(result['locations']) > 1:
                     outfh.write(f'@{read_id} {comments}\n{seq}\n+\n{qual}\n')
                     split_multiple_times.add(read_id)
@@ -157,10 +221,22 @@ def process_file(
                 else:
                     hits = []
                     edited_reads.add(read_id)
+                    hitN=0
                     for left_hit, right_hit in pairwise(
                             [(0, 0), *result['locations'], (len(seq),
                                                             len(seq))]):
                         hits.append([left_hit[1], right_hit[0]])
+                        hitN=hitN+1
+                        if hitN == 2: ##-- we are only considering splits if it is 1 clean split; so when information for second part of read is filled, pick the end of 1st and start of 2nd part ; so as to have the cut out adapter sequence divided into the 2 splitted reads
+                            
+                            print("end1-start2",left_hit[0],left_hit[1]) 
+                            
+                            mid=(left_hit[1]-left_hit[0])/2
+                            midR=int(mid) if mid % 1 == 0 else math.ceil(mid)
+                            print("mid",mid,"midR",midR)
+                            
+                        #print("hitN:",hitN)#part of the read
+                        #print("HITS:A",hits) ##information for the split
                     for idx, (start, end) in enumerate(hits, start=1):
                         if debug_output:
                             write_match_to_fasta(fasta,
@@ -172,6 +248,18 @@ def process_file(
                         # sequence
                         if end <= start:
                             continue
+                        #print("HERE",start,end,mid)
+
+                        if idx == 1:
+                            if mid%1==0:
+                                end = end+(midR)
+                            else:
+                                end = end+(midR)-1
+                        elif idx == 2:
+                            start=start-midR 
+
+                        print("calcuated",start,end)
+                       
                         subseq = seq[start:end]
                         subqual = qual[start:end]
                         h = (f'@{read_id}_{idx} {comments} {start}->{end}\n'
@@ -204,6 +292,7 @@ def split(
         allow_multiple_splits=False,
         trim_start=200,
         trim_end=200,
+        adapter_type="ONT_sequencing_adapter",
         ):
     """Split reads.
 
@@ -232,6 +321,7 @@ def split(
     :param trim_start: How many bases to trim (mask) from the
                        beginning of the strand
     :param trim_end: How many bases to trim (mask) from the end of the strand
+    :param adapter_type: lalala
     """
     logger = duplex_tools.get_named_logger("SplitOnAdapters")
     logger.info(f'Duplex tools version: {duplex_tools.__version__}')
@@ -248,6 +338,7 @@ def split(
         n_bases_to_mask_head=n_bases_to_mask_head,
         n_bases_to_mask_tail=n_bases_to_mask_tail,
         degenerate_bases=degenerate_bases,
+        adapter_type=adapter_type,
         n_replacement=n_replacement)[type]
     if edit_threshold is None:
         edit_threshold = EDIT_THRESHOLDS[type]
@@ -264,6 +355,7 @@ def split(
         allow_multiple_splits=allow_multiple_splits,
         trim_start=trim_start,
         trim_end=trim_end,
+        adapter_type=adapter_type,
     )
 
     with ProcessPoolExecutor(max_workers=threads) as executor:
@@ -285,9 +377,12 @@ def split(
     nedited_reads = len(edited_reads)
     nunedited_reads = len(unedited_reads)
     n_multisplit = len(split_multiple_times)
-    logger.info(f'Split {nedited_reads} reads\n'
-                f'Kept {nunedited_reads} reads')
-    logger.info(f'Wrote a total of {total_written} reads')
+    logger.info(f'{adapter_type}\t{fastq_dir}\t'
+                f'Split {nedited_reads} reads\t'
+                f'Kept {nunedited_reads} reads\t'
+                f'Wrote a total of {total_written} reads\t'
+                f'edit_distance lt {edit_threshold} mismatches')
+    #logger.info(f'Wrote a total of {total_written} reads')
     if not allow_multiple_splits:
         logger.info(f'{n_multisplit} reads contained multiple'
                     f' adapters but we re written out as single reads '
@@ -365,10 +460,14 @@ def argparser():
         "--trim_end", default=200, type=int,
         help="How many bases to trim (mask) "
              "from the end of the strand" + default)
+    parser.add_argument(
+        "--adapter_type",  choices=["ONT_sequencing_adapter","CapTrap_primer","CapTrap_linker","CapTrap_joint","ONT_sequencing_adapter+CapTrapSeqJoint"],
+        help="adapter type to split on.")
     return parser
 
 
 def main(args):
+    #print(args)
     """Entry point."""
     split(
         args.fastq_dir,
@@ -387,4 +486,5 @@ def main(args):
         args.allow_multiple_splits,
         args.trim_start,
         args.trim_end,
+        args.adapter_type,
         )
